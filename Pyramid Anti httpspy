@@ -1,0 +1,311 @@
+local HttpService = game:GetService("HttpService")
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+
+local WEBHOOK_URL = (getgenv and getgenv().WEBHOOK_URL)
+    or rawget(_G, "WEBHOOK_URL")
+    or nil
+
+if WEBHOOK_URL then
+    local ok = type(WEBHOOK_URL) == "string"
+        and #WEBHOOK_URL > 80
+        and WEBHOOK_URL:find("^https://discord%.com/api/webhooks/%d+/[%w_%-]+$") ~= nil
+    if not ok then
+        WEBHOOK_URL = nil
+    end
+end
+
+local plr = Players.LocalPlayer
+local uid = plr and plr.UserId or 0
+local triggered = false
+
+local cleanRequest = request or http_request or (syn and syn.request)
+pcall(function()
+    if cleanRequest and clonefunction then
+        cleanRequest = clonefunction(cleanRequest)
+    end
+end)
+
+local origHttpGet = game.HttpGet
+local origHttpPost = game.HttpPost
+pcall(function()
+    if clonefunction then
+        origHttpGet = clonefunction(game.HttpGet)
+        origHttpPost = clonefunction(game.HttpPost)
+    end
+end)
+
+local function getHWID()
+    local hwid = nil
+    pcall(function()
+        if syn and syn.get_hwid then
+            hwid = syn.get_hwid()
+        elseif gethwid then
+            hwid = gethwid()
+        elseif krnl_gethwid then
+            hwid = krnl_gethwid()
+        elseif fluxus and fluxus.get_hwid then
+            hwid = fluxus.get_hwid()
+        elseif game:GetService("RbxAnalyticsService") then
+            hwid = game:GetService("RbxAnalyticsService"):GetClientId()
+        end
+    end)
+    return hwid or "未知"
+end
+
+local function isLuaFunction(fn)
+    local ok, info = pcall(debug.getinfo, fn, "S")
+    return ok and info and info.what == "Lua"
+end
+
+local infoCache = nil
+local function collectInfo()
+    if infoCache then return infoCache end
+
+    local name = plr and plr.Name or "Unknown"
+    local dname = plr and plr.DisplayName or name
+    local accountAge, membership = 0, "None"
+    pcall(function() accountAge = plr.AccountAge end)
+    pcall(function() membership = tostring(plr.MembershipType) end)
+
+    local platform = "未知"
+    pcall(function()
+        local uis = game:GetService("UserInputService")
+        if uis.TouchEnabled and not uis.MouseEnabled then 
+            platform = "📱 手机/平板"
+        elseif uis.MouseEnabled then 
+            platform = "🖥️ PC"
+        else 
+            platform = "🎮 主机" 
+        end
+    end)
+
+    local gameName = "未知"
+    pcall(function()
+        local info = game:GetService("MarketplaceService"):GetProductInfo(game.PlaceId)
+        if info and info.Name then gameName = info.Name end
+    end)
+
+    local position = "未知"
+    pcall(function()
+        local c = plr.Character
+        if c then
+            local hrp = c:FindFirstChild("HumanoidRootPart")
+            if hrp then position = string.format("X:%.1f Y:%.1f Z:%.1f", hrp.Position.X, hrp.Position.Y, hrp.Position.Z) end
+        end
+    end)
+
+    local exploitInfo = "未知"
+    pcall(function()
+        local parts = {}
+        if syn then table.insert(parts, "syn") end
+        if getexecutorname then
+            local ok, n = pcall(getexecutorname)
+            if ok and n then table.insert(parts, tostring(n)) end
+        end
+        if getgc then table.insert(parts, "getgc") end
+        if hookfunction then table.insert(parts, "hookfunction") end
+        if getconnections then table.insert(parts, "getconnections") end
+        exploitInfo = #parts > 0 and table.concat(parts, ", ") or "未知"
+    end)
+
+    infoCache = {
+        name = name, dname = dname, uid = uid,
+        accountAge = accountAge, membership = membership,
+        platform = platform, gameName = gameName,
+        position = position, exploitInfo = exploitInfo,
+        hwid = getHWID(),
+        placeId = tostring(game.PlaceId)
+    }
+    return infoCache
+end
+
+local function SendWebhook(reason, details)
+
+    if not WEBHOOK_URL then return end
+    if not cleanRequest then return end
+
+    local info = collectInfo()
+    local time = os.date("%Y-%m-%d %H:%M:%S")
+
+    local payload = {
+        embeds = {{
+            title = "🚨 Anti-HttpSpy 检测触发",
+            description = "检测到 HttpSpy 并已拦截",
+            color = 16711680,
+            author = {name = "🛡️ 安全系统"},
+            fields = {
+                {name = "⚡ 触发原因", value = tostring(reason or "未知"), inline = false},
+                {name = "📝 详情", value = tostring(details or "-"), inline = false},
+                {name = "━ ━ ━ ━ ━ ━ ━ ━ ━ ━", value = "**玩家信息**", inline = false},
+                {name = "👤 用户名", value = info.name .. " (@ " .. info.dname .. ")", inline = true},
+                {name = "🆔 UserId", value = tostring(info.uid), inline = true},
+                {name = "🔑 HWID", value = "`" .. tostring(info.hwid) .. "`", inline = false},
+                {name = "📅 账号年龄", value = tostring(info.accountAge) .. " 天", inline = true},
+                {name = "💎 会员", value = info.membership, inline = true},
+                {name = "📱 平台", value = info.platform, inline = true},
+                {name = "💉 注入器", value = info.exploitInfo, inline = true},
+                {name = "━ ━ ━ ━ ━ ━ ━ ━ ━ ━", value = "**游戏信息**", inline = false},
+                {name = "🎮 游戏", value = info.gameName, inline = true},
+                {name = "🆔 PlaceId", value = info.placeId, inline = true},
+                {name = "📍 坐标", value = info.position, inline = true},
+            },
+            footer = {text = "⏰ " .. time .. " | Anti-HttpSpy v5.3 by Pyramid"},
+            timestamp = os.date("!%Y-%m-%dT%H:%M:%S.000Z")
+        }}
+    }
+
+    local ok, json = pcall(HttpService.JSONEncode, HttpService, payload)
+    if ok and json then
+        pcall(cleanRequest, {
+            Url = WEBHOOK_URL,
+            Method = "POST",
+            Headers = {["Content-Type"] = "application/json"},
+            Body = json
+        })
+    end
+end
+
+local SPY_FINGERPRINTS = {
+    "Log copied to clipboard!", "HTTP GET", "HTTP POST", "createLogEntry",
+    "Your exploit is not supported!", "HTTP Spy made by", "httplogs.txt",
+    "HookSynRequest", "BlockUrl", "ProxyHost", "__namecall", 
+    "HttpSpyLogger", "Http Spy",
+}
+
+local function quickCheck()
+    if isLuaFunction(game.HttpGet) then return true, "HttpGet 被 Hook" end
+    if isLuaFunction(game.HttpPost) then return true, "HttpPost 被 Hook" end
+    return false, nil
+end
+
+local function guiQuickCheck()
+    for _, v in ipairs(game.CoreGui:GetChildren()) do
+        if v:IsA("ScreenGui") then
+            local name = v.Name:lower()
+            if name:find("httpspy", 1, true) or name:find("http_spy", 1, true) or name:find("simplespy", 1, true) then
+                return true, "CoreGui:" .. v.Name
+            end
+        end
+    end
+    if gethui then
+        for _, v in ipairs(gethui():GetChildren()) do
+            if v:IsA("ScreenGui") then
+                local name = v.Name:lower()
+                if name:find("httpspy", 1, true) or name:find("http_spy", 1, true) or name:find("simplespy", 1, true) then
+                    return true, "HUI:" .. v.Name
+                end
+            end
+        end
+    end
+    return false, nil
+end
+
+local function gcQuickScan()
+    if not getgc then return false, nil end
+    local ok, gc = pcall(getgc, true)
+    if not ok or type(gc) ~= "table" then return false, nil end
+
+    local limit = math.min(#gc, 50)
+    for i = 1, limit do
+        local v = gc[i]
+        if type(v) == "function" then
+            local hit = false
+            pcall(function()
+                local ok2, consts = pcall(debug.getconstants, v)
+                if ok2 and consts then
+                    for _, c in ipairs(consts) do
+                        local cs = tostring(c)
+                        for _, fp in ipairs(SPY_FINGERPRINTS) do
+                            if cs:find(fp, 1, true) then hit = true break end
+                        end
+                        if hit then break end
+                    end
+                end
+            end)
+            if hit then return true, "GC 特征匹配" end
+        end
+    end
+    return false, nil
+end
+
+local function onDetected(reason, details)
+    if triggered then return end
+    triggered = true
+    SendWebhook(reason, details)
+    task.delay(0.3, function() 
+        pcall(function() 
+            plr:Kick("🚫 检测到非法工具 (HttpSpy)\n✅ 你的行为已被记录\n🛡️ Anti-HttpSpy by Pyramid") 
+        end) 
+    end)
+end
+
+local function isSensitiveUrl(url)
+    if type(url) ~= "string" then return false end
+    local u = url:lower()
+    if WEBHOOK_URL then
+        local id = WEBHOOK_URL:match("(%d+)")
+        if id and u:find(id, 1, true) then return false end
+    end
+    return u:find("webhook") or u:find("discord.com") or u:find("githubusercontent")
+end
+
+pcall(function()
+    if hookfunction and origHttpGet then
+        hookfunction(game.HttpGet, function(self, url, ...)
+            if triggered then return origHttpGet(self, url, ...) end
+            if isSensitiveUrl(url) then onDetected("HTTP GET 敏感拦截", url) return "" end
+            return origHttpGet(self, url, ...)
+        end)
+    end
+end)
+
+pcall(function()
+    if hookfunction and origHttpPost then
+        hookfunction(game.HttpPost, function(self, url, ...)
+            if triggered then return origHttpPost(self, url, ...) end
+            if isSensitiveUrl(url) then onDetected("HTTP POST 敏感拦截", url) return "" end
+            return origHttpPost(self, url, ...)
+        end)
+    end
+end)
+
+local hooked, sig = quickCheck()
+if hooked then onDetected("启动检测", sig) return end
+
+local guiHooked, guiSig = guiQuickCheck()
+if guiHooked then onDetected("启动检测", guiSig) return end
+
+local gcHooked, gcSig = gcQuickScan()
+if gcHooked then onDetected("启动检测", gcSig) return end
+
+local lastQuick = 0
+local lastGui = 0
+local lastFull = 0
+local startTime = tick()
+
+RunService.Heartbeat:Connect(function()
+    if triggered then return end
+    local now = tick()
+    if now - startTime < 0.5 then return end
+
+    if now - lastQuick >= 0.3 then
+        lastQuick = now
+        local hooked, sig = quickCheck()
+        if hooked then onDetected("心跳扫描", sig) return end
+    end
+
+    if now - lastGui >= 1.5 then
+        lastGui = now
+        local guiHooked, guiSig = guiQuickCheck()
+        if guiHooked then onDetected("心跳扫描", guiSig) return end
+    end
+
+    if now - lastFull >= 3 then
+        lastFull = now
+        task.spawn(function()
+            local gcHooked, gcSig = gcQuickScan()
+            if gcHooked and not triggered then onDetected("心跳扫描", gcSig) end
+        end)
+    end
+end)
